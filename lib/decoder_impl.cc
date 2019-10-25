@@ -60,7 +60,7 @@ namespace gr {
                 exit(1);
             }
 
-            #ifdef DEBUG
+            #ifdef GRLORA_DEBUG
                 d_debug_samples.open("/tmp/grlora_debug", std::ios::out | std::ios::binary);
                 d_debug.open("/tmp/grlora_debug_txt", std::ios::out);
                 d_dbg.attach();
@@ -125,7 +125,7 @@ namespace gr {
          * Our virtual destructor.
          */
         decoder_impl::~decoder_impl() {
-            #ifdef DEBUG
+            #ifdef GRLORA_DEBUG
                 if (d_debug_samples.is_open())
                     d_debug_samples.close();
 
@@ -189,7 +189,7 @@ namespace gr {
         }
 
         void decoder_impl::samples_to_file(const std::string path, const gr_complex *v, const uint32_t length, const uint32_t elem_size) {
-            #ifdef DEBUG
+            #ifdef GRLORA_DEBUG
                 std::ofstream out_file;
                 out_file.open(path.c_str(), std::ios::out | std::ios::binary);
 
@@ -208,7 +208,7 @@ namespace gr {
         }
 
         void decoder_impl::samples_debug(const gr_complex *v, const uint32_t length) {
-            #ifdef DEBUG
+            #ifdef GRLORA_DEBUG
                 gr_complex start_indicator(0.0f, 32.0f);
                 d_debug_samples.write(reinterpret_cast<const char *>(&start_indicator), sizeof(gr_complex));
 
@@ -297,7 +297,7 @@ namespace gr {
             return result;
         }
 
-        void decoder_impl::fine_sync(const gr_complex* in_samples, uint32_t bin_idx, int32_t search_space) {
+        void decoder_impl::fine_sync(const gr_complex* in_samples, int32_t bin_idx, int32_t search_space) {
             int32_t shift_ref = (bin_idx+1) * d_decim_factor;
             float samples_ifreq[d_samples_per_symbol];
             float max_correlation = 0.0f;
@@ -314,15 +314,27 @@ namespace gr {
                  }
             }
 
-            #ifdef DEBUG
-                //d_debug << "FINE: " << -lag << std::endl;
+            #ifdef GRLORA_DEBUG
+                d_debug << "LAG : " << lag << std::endl;
             #endif
 
             d_fine_sync = -lag;
 
-            //if(abs(d_fine_sync) >= d_decim_factor / 2)
-            //    d_fine_sync = 0;
+            // Soft limit impact of correction
+            /*
+            if(lag > 0)
+                d_fine_sync = std::min(-lag / 2, -1);
+            else if(lag < 0)
+                d_fine_sync = std::max(-lag / 2, 1);*/
+
+            // Hard limit impact of correction
+            /*if(abs(d_fine_sync) >= d_decim_factor / 2)
+                d_fine_sync = 0;*/
+
             //d_fine_sync = 0;
+            #ifdef GRLORA_DEBUG
+                d_debug << "FINE: " << d_fine_sync << std::endl;
+            #endif
         }
 
         float decoder_impl::detect_preamble_autocorr(const gr_complex *samples, const uint32_t window) {
@@ -498,7 +510,7 @@ namespace gr {
             // Decode (actually gray encode) the bin to get the symbol value
             const uint32_t word = bin_idx ^ (bin_idx >> 1u);
 
-            #ifdef DEBUG
+            #ifdef GRLORA_DEBUG
                 d_debug << gr::lora::to_bin(word, reduced_rate ? d_sf - 2u : d_sf) << " " << word << " (bin " << bin_idx << ")"  << std::endl;
             #endif
             d_words.push_back(word);
@@ -539,7 +551,7 @@ namespace gr {
                 }
             }
 
-            #ifdef DEBUG
+            #ifdef GRLORA_DEBUG
                 print_interleave_matrix(d_debug, d_words, ppm);
                 print_vector_bin(d_debug, words_deinterleaved, "D", sizeof(uint8_t) * 8u);
             #endif
@@ -618,7 +630,7 @@ namespace gr {
                 d_words_deshuffled.push_back(result);
             }
 
-            #ifdef DEBUG
+            #ifdef GRLORA_DEBUG
                 print_vector_bin(d_debug, d_words_deshuffled, "S", sizeof(uint8_t)*8);
             #endif
 
@@ -639,7 +651,7 @@ namespace gr {
                 d_words_dewhitened.push_back(xor_b);
             }
 
-            #ifdef DEBUG
+            #ifdef GRLORA_DEBUG
                 print_vector_bin(d_debug, d_words_dewhitened, "W", sizeof(uint8_t) * 8);
             #endif
 
@@ -749,7 +761,7 @@ namespace gr {
 
                     if (correlation >= 0.90f) {
                         determine_snr();
-                        #ifdef DEBUG
+                        #ifdef GRLORA_DEBUG
                             d_debug << "Ca: " << correlation << std::endl;
                         #endif
                         d_corr_fails = 0u;
@@ -780,12 +792,12 @@ namespace gr {
                 case gr::lora::DecoderState::FIND_SFD: {
                     const float c = detect_downchirp(input, d_samples_per_symbol);
 
-                    #ifdef DEBUG
+                    #ifdef GRLORA_DEBUG
                         d_debug << "Cd: " << c << std::endl;
                     #endif
 
                     if (c > 0.96f) {
-                        #ifdef DEBUG
+                        #ifdef GRLORA_DEBUG
                             d_debug << "SYNC: " << c << std::endl;
                         #endif
                         // Debug stuff
@@ -794,14 +806,15 @@ namespace gr {
                         d_state = gr::lora::DecoderState::PAUSE;
                     } else {
                         if(c < -0.97f) {
-                            fine_sync(input, d_number_of_bins-1, d_decim_factor * 4);
+                            // TODO: Check d_upchirp_ifreq_v: bin -1 gives different result compared to bin d_number_of_bins-1, which shouldn't be the case.
+                            fine_sync(input, -1, d_decim_factor * 4);
                         } else {
                             d_corr_fails++;
                         }
 
                         if (d_corr_fails > 4u) {
                             d_state = gr::lora::DecoderState::DETECT;
-                            #ifdef DEBUG
+                            #ifdef GRLORA_DEBUG
                                 d_debug << "Lost sync" << std::endl;
                             #endif
                         }
@@ -844,7 +857,7 @@ namespace gr {
                         const int blocks_needed     = (int)std::ceil(symbols_needed / symbols_per_block);
                         d_payload_symbols     = blocks_needed * symbols_per_block;
 
-                        #ifdef DEBUG
+                        #ifdef GRLORA_DEBUG
                             d_debug << "LEN: " << d_payload_length << " (" << d_payload_symbols << " symbols)" << std::endl;
                         #endif
 
